@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import toml
@@ -34,6 +35,7 @@ AGENT_DECK_DIR = Path.home() / ".agent-deck"
 CONFIG_PATH = AGENT_DECK_DIR / "config.toml"
 CONDUCTOR_DIR = AGENT_DECK_DIR / "conductor"
 LOG_PATH = CONDUCTOR_DIR / "bridge.log"
+LOGS_DIR = CONDUCTOR_DIR / "logs"
 
 # Telegram message length limit
 TG_MAX_LENGTH = 4096
@@ -43,6 +45,9 @@ RESPONSE_TIMEOUT = 300
 
 # Poll interval when waiting for conductor response (seconds)
 POLL_INTERVAL = 2
+
+# Message history enabled flag (set from config)
+MESSAGE_HISTORY_ENABLED = True
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -57,6 +62,115 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("conductor-bridge")
+
+
+# ---------------------------------------------------------------------------
+# Message History (Daily Log Files)
+# ---------------------------------------------------------------------------
+
+
+def get_daily_log_path() -> Path:
+    """Get path for today's log file."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    LOGS_DIR.mkdir(exist_ok=True)
+    return LOGS_DIR / f"{today}.log"
+
+
+def log_message(platform: str, direction: str, sender: str, message: str, **kwargs) -> str:
+    """
+    Append a message to today's log file.
+
+    Args:
+        platform: "telegram", "slack", or "heartbeat"
+        direction: "incoming" or "outgoing"
+        sender: User ID or conductor name
+        message: Message text
+        **kwargs: Additional fields (recipient, profile, conductor, message_id, metadata, etc.)
+
+    Returns:
+        Timestamp (used as correlation ID for updates)
+    """
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    if MESSAGE_HISTORY_ENABLED:
+        entry = {
+            "timestamp": timestamp,
+            "platform": platform,
+            "direction": direction,
+            "sender": sender,
+            "message": message,
+            "status": "pending" if direction == "incoming" else "sent",
+            **kwargs
+        }
+
+        try:
+            with open(get_daily_log_path(), "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as e:
+            log.error("Failed to write message log: %s", e)
+
+    return timestamp
+
+
+def update_message_response(
+    msg_timestamp: str,
+    response: str,
+    response_time_ms: int,
+    status: str = "completed",
+    error_message: str | None = None
+):
+    """
+    Add a completion entry for a message.
+
+    Args:
+        msg_timestamp: Original message timestamp (correlation ID)
+        response: Response text
+        response_time_ms: Response time in milliseconds
+        status: "completed", "error", or "timeout"
+        error_message: Error details if applicable
+    """
+    if not MESSAGE_HISTORY_ENABLED:
+        return
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message_timestamp": msg_timestamp,
+        "response": response,
+        "response_time_ms": response_time_ms,
+        "status": status,
+    }
+    if error_message:
+        entry["error_message"] = error_message
+
+    try:
+        with open(get_daily_log_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.error("Failed to write response log: %s", e)
+
+
+def cleanup_old_logs(days: int = 90):
+    """Delete log files older than specified days."""
+    if not MESSAGE_HISTORY_ENABLED or not LOGS_DIR.exists():
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    deleted = 0
+
+    for log_file in LOGS_DIR.glob("*.log"):
+        try:
+            # Parse date from filename YYYY-MM-DD.log
+            date_str = log_file.stem
+            file_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            if file_date < cutoff:
+                log_file.unlink()
+                log.info("Deleted old log: %s", log_file.name)
+                deleted += 1
+        except (ValueError, OSError) as e:
+            log.warning("Failed to process %s: %s", log_file.name, e)
+
+    if deleted > 0:
+        log.info("Cleaned up %d old log file(s)", deleted)
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +203,14 @@ def load_config() -> dict:
         sys.exit(1)
 
     profiles = conductor_cfg.get("profiles", ["default"])
+    message_history_enabled = conductor_cfg.get("message_history_enabled", True)
 
     return {
         "token": token,
         "user_id": int(user_id),
         "heartbeat_interval": conductor_cfg.get("heartbeat_interval", 15),
         "profiles": profiles,
+        "message_history_enabled": message_history_enabled,
     }
 
 
@@ -507,10 +623,34 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
 
         session_title = conductor_session_title(target_profile)
 
+        # Log incoming message
+        start_time = time.time()
+        msg_ts = log_message(
+            platform="telegram",
+            direction="incoming",
+            sender=str(message.from_user.id),
+            message=cleaned_msg,
+            recipient=session_title,
+            profile=target_profile,
+            conductor=session_title,
+            message_id=str(message.message_id),
+            metadata={
+                "username": message.from_user.username,
+                "first_name": message.from_user.first_name,
+            } if message.from_user.username else {},
+        )
+
         # Ensure conductor is running for this profile
         if not ensure_conductor_running(target_profile):
-            await message.answer(
-                f"[Could not start conductor for {target_profile}. Check agent-deck.]"
+            error_msg = f"[Could not start conductor for {target_profile}. Check agent-deck.]"
+            await message.answer(error_msg)
+            # Log error
+            update_message_response(
+                msg_ts,
+                response=error_msg,
+                response_time_ms=int((time.time() - start_time) * 1000),
+                status="error",
+                error_message="Conductor failed to start",
             )
             return
 
@@ -521,8 +661,15 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
         if not send_to_conductor(
             session_title, cleaned_msg, profile=target_profile
         ):
-            await message.answer(
-                f"[Failed to send message to conductor [{target_profile}].]"
+            error_msg = f"[Failed to send message to conductor [{target_profile}].]"
+            await message.answer(error_msg)
+            # Log error
+            update_message_response(
+                msg_ts,
+                response=error_msg,
+                response_time_ms=int((time.time() - start_time) * 1000),
+                status="error",
+                error_message="Failed to send to conductor",
             )
             return
 
@@ -535,6 +682,28 @@ def create_bot(config: dict) -> tuple[Bot, Dispatcher]:
             session_title, profile=target_profile
         )
         log.info("Conductor [%s] response: %s", target_profile, response[:100])
+
+        # Calculate response time
+        response_time_ms = int((time.time() - start_time) * 1000)
+
+        # Determine status
+        status = "completed"
+        error_msg = None
+        if "[Conductor timed out" in response:
+            status = "timeout"
+            error_msg = "Conductor response timeout"
+        elif "[Conductor session is in error state" in response:
+            status = "error"
+            error_msg = "Conductor in error state"
+
+        # Log response
+        update_message_response(
+            msg_ts,
+            response=response,
+            response_time_ms=response_time_ms,
+            status=status,
+            error_message=error_msg,
+        )
 
         # Send response back (split if needed)
         for chunk in split_message(response):
@@ -627,6 +796,18 @@ async def heartbeat_loop(bot: Bot, config: dict):
 
                 heartbeat_msg = " ".join(parts)
 
+                # Log heartbeat message
+                hb_start = time.time()
+                hb_ts = log_message(
+                    platform="heartbeat",
+                    direction="outgoing",
+                    sender="bridge",
+                    message=heartbeat_msg,
+                    recipient=session_title,
+                    profile=profile,
+                    conductor=session_title,
+                )
+
                 # Ensure conductor is running for this profile
                 if not ensure_conductor_running(profile):
                     log.error(
@@ -654,6 +835,14 @@ async def heartbeat_loop(bot: Bot, config: dict):
                     profile, response[:200],
                 )
 
+                # Log heartbeat response
+                update_message_response(
+                    hb_ts,
+                    response=response,
+                    response_time_ms=int((time.time() - hb_start) * 1000),
+                    status="completed",
+                )
+
                 # If conductor flagged items needing attention, notify via Telegram
                 if "NEED:" in response:
                     try:
@@ -679,8 +868,20 @@ async def heartbeat_loop(bot: Bot, config: dict):
 
 
 async def main():
+    global MESSAGE_HISTORY_ENABLED
+
     log.info("Loading config from %s", CONFIG_PATH)
     config = load_config()
+
+    # Set global message history flag from config
+    MESSAGE_HISTORY_ENABLED = config["message_history_enabled"]
+    if MESSAGE_HISTORY_ENABLED:
+        log.info("Message history logging enabled")
+    else:
+        log.info("Message history logging disabled")
+
+    # Clean up old log files (keep last 90 days)
+    cleanup_old_logs(days=90)
 
     log.info(
         "Starting conductor bridge (user_id=%d, heartbeat=%dm, profiles=%s)",
