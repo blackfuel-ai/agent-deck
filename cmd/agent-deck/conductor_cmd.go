@@ -60,6 +60,8 @@ func handleConductorSetup(profile string, args []string) {
 	noHeartbeat := fs.Bool("no-heartbeat", false, "Disable heartbeat for this conductor")
 	heartbeat := fs.Bool("heartbeat", false, "Enable heartbeat for this conductor (default)")
 	description := fs.String("description", "", "Description for this conductor")
+	sharedClaudeMD := fs.String("shared-claude-md", "", "Custom path for shared CLAUDE.md (e.g., ~/docs/conductor-shared.md)")
+	claudeMD := fs.String("claude-md", "", "Custom path for this conductor's CLAUDE.md (e.g., ~/docs/conductor-ryan.md)")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck [-p profile] conductor setup <name> [options]")
@@ -71,6 +73,9 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Println("  <name>    Conductor name (e.g., ryan, infra, monitor)")
 		fmt.Println()
 		fmt.Println("Options:")
+		fmt.Println("  --shared-claude-md PATH  Custom location for shared CLAUDE.md (all conductors)")
+		fmt.Println("  --claude-md PATH         Custom location for this conductor's CLAUDE.md")
+		fmt.Println("                           Paths must be absolute or ~/relative")
 		fs.PrintDefaults()
 	}
 
@@ -214,10 +219,11 @@ func handleConductorSetup(profile string, args []string) {
 
 		// Update config (no longer stores profiles list, conductors are on disk)
 		settings = session.ConductorSettings{
-			Enabled:           true,
-			HeartbeatInterval: 15,
-			Telegram:          telegram,
-			Slack:             slack,
+			Enabled:            true,
+			HeartbeatInterval:  15,
+			Telegram:           telegram,
+			Slack:              slack,
+			SharedClaudeMDPath: *sharedClaudeMD, // NEW: Save custom shared CLAUDE.md path
 		}
 		config.Conductor = settings
 
@@ -243,7 +249,7 @@ func handleConductorSetup(profile string, args []string) {
 		fmt.Printf("\nSetting up conductor: %s (profile: %s)\n", name, profile)
 	}
 
-	if err := session.SetupConductor(name, profile, heartbeatEnabled, *description); err != nil {
+	if err := session.SetupConductor(name, profile, heartbeatEnabled, *description, *claudeMD); err != nil {
 		fmt.Fprintf(os.Stderr, "Error setting up conductor %s: %v\n", name, err)
 		os.Exit(1)
 	}

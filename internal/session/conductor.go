@@ -31,6 +31,11 @@ type ConductorSettings struct {
 
 	// Slack defines Slack bot integration settings
 	Slack SlackSettings `toml:"slack"`
+
+	// SharedClaudeMDPath is the custom path to the shared CLAUDE.md file
+	// Default: ~/.agent-deck/conductor/CLAUDE.md (if empty)
+	// Supports ~ expansion and absolute paths
+	SharedClaudeMDPath string `toml:"shared_claude_md_path"`
 }
 
 // TelegramSettings defines Telegram bot configuration for the conductor bridge
@@ -66,6 +71,11 @@ type ConductorMeta struct {
 	HeartbeatInterval int    `json:"heartbeat_interval"` // 0 = use global default
 	Description       string `json:"description,omitempty"`
 	CreatedAt         string `json:"created_at"`
+
+	// ClaudeMDPath is the custom path to this conductor's CLAUDE.md file
+	// Default: ~/.agent-deck/conductor/<name>/CLAUDE.md (if empty)
+	// Supports ~ expansion and absolute paths
+	ClaudeMDPath string `json:"claude_md_path,omitempty"`
 }
 
 // conductorNameRegex validates conductor names: starts with alphanumeric, then alphanumeric/._-
@@ -103,6 +113,73 @@ func ConductorNameDir(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, name), nil
+}
+
+// GetSharedClaudeMDPath returns the path to the shared CLAUDE.md file.
+// Checks config.toml for custom path, falls back to default.
+// Expands ~ to home directory and validates absolute paths.
+func GetSharedClaudeMDPath() (string, error) {
+	config, err := LoadUserConfig()
+	if err == nil && config != nil && config.Conductor.SharedClaudeMDPath != "" {
+		customPath := config.Conductor.SharedClaudeMDPath
+
+		// Expand ~ to home directory
+		if strings.HasPrefix(customPath, "~/") {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("failed to expand ~: %w", err)
+			}
+			customPath = filepath.Join(homeDir, customPath[2:])
+		}
+
+		// Ensure absolute path (security: prevent path traversal)
+		if !filepath.IsAbs(customPath) {
+			return "", fmt.Errorf("shared_claude_md_path must be absolute: %s", customPath)
+		}
+
+		return customPath, nil
+	}
+
+	// Default: ~/.agent-deck/conductor/CLAUDE.md
+	dir, err := ConductorDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "CLAUDE.md"), nil
+}
+
+// GetConductorClaudeMDPath returns the path to a conductor's CLAUDE.md file.
+// Checks meta.json for custom path, falls back to default.
+// Expands ~ to home directory and validates absolute paths.
+func GetConductorClaudeMDPath(name string) (string, error) {
+	// Try loading meta.json to check for custom path
+	meta, err := LoadConductorMeta(name)
+	if err == nil && meta.ClaudeMDPath != "" {
+		customPath := meta.ClaudeMDPath
+
+		// Expand ~ to home directory
+		if strings.HasPrefix(customPath, "~/") {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("failed to expand ~: %w", err)
+			}
+			customPath = filepath.Join(homeDir, customPath[2:])
+		}
+
+		// Ensure absolute path (security: prevent path traversal)
+		if !filepath.IsAbs(customPath) {
+			return "", fmt.Errorf("claude_md_path must be absolute: %s", customPath)
+		}
+
+		return customPath, nil
+	}
+
+	// Default: ~/.agent-deck/conductor/<name>/CLAUDE.md
+	dir, err := ConductorNameDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "CLAUDE.md"), nil
 }
 
 // ConductorProfileDir returns the per-profile conductor directory.
@@ -230,7 +307,7 @@ func ListConductorsForProfile(profile string) ([]ConductorMeta, error) {
 
 // SetupConductor creates the conductor directory, per-conductor CLAUDE.md, and meta.json.
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductor(name, profile string, heartbeatEnabled bool, description string) error {
+func SetupConductor(name, profile string, heartbeatEnabled bool, description string, claudeMDPath string) error {
 	dir, err := ConductorNameDir(name)
 	if err != nil {
 		return fmt.Errorf("failed to get conductor dir: %w", err)
@@ -238,6 +315,34 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create conductor dir: %w", err)
+	}
+
+	// Determine CLAUDE.md path
+	var claudeMD string
+	if claudeMDPath != "" {
+		// Custom path provided
+		if strings.HasPrefix(claudeMDPath, "~/") {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to expand ~: %w", err)
+			}
+			claudeMD = filepath.Join(homeDir, claudeMDPath[2:])
+		} else {
+			claudeMD = claudeMDPath
+		}
+
+		// Validate absolute path
+		if !filepath.IsAbs(claudeMD) {
+			return fmt.Errorf("--claude-md path must be absolute: %s", claudeMDPath)
+		}
+
+		// Ensure parent directory exists
+		if err := os.MkdirAll(filepath.Dir(claudeMD), 0o755); err != nil {
+			return fmt.Errorf("failed to create directory for CLAUDE.md: %w", err)
+		}
+	} else {
+		// Default path
+		claudeMD = filepath.Join(dir, "CLAUDE.md")
 	}
 
 	// Write per-conductor CLAUDE.md with name and profile substitution
@@ -250,7 +355,7 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 	} else {
 		content = strings.ReplaceAll(content, "{PROFILE}", profile)
 	}
-	claudeMD := filepath.Join(dir, "CLAUDE.md")
+
 	if err := os.WriteFile(claudeMD, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("failed to write CLAUDE.md: %w", err)
 	}
@@ -262,6 +367,7 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 		HeartbeatEnabled: heartbeatEnabled,
 		Description:      description,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		ClaudeMDPath:     claudeMDPath, // Store custom path (empty string if using default)
 	}
 	if err := SaveConductorMeta(meta); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
@@ -426,21 +532,24 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 // SetupConductorProfile creates the conductor directory and CLAUDE.md for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, "")
+	return SetupConductor(profile, profile, true, "", "")
 }
 
 // InstallSharedClaudeMD writes the shared CLAUDE.md to the conductor base directory.
 // This contains CLI reference, protocols, and rules shared by all conductors.
 func InstallSharedClaudeMD() error {
-	dir, err := ConductorDir()
+	claudeMDPath, err := GetSharedClaudeMDPath()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get shared CLAUDE.md path: %w", err)
 	}
+
+	// Ensure parent directory exists
+	dir := filepath.Dir(claudeMDPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("failed to create conductor dir: %w", err)
+		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	claudeMD := filepath.Join(dir, "CLAUDE.md")
-	if err := os.WriteFile(claudeMD, []byte(conductorSharedClaudeMDTemplate), 0o644); err != nil {
+
+	if err := os.WriteFile(claudeMDPath, []byte(conductorSharedClaudeMDTemplate), 0o644); err != nil {
 		return fmt.Errorf("failed to write shared CLAUDE.md: %w", err)
 	}
 	return nil

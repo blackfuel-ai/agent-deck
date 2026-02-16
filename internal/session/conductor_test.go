@@ -318,3 +318,186 @@ func TestGetProfiles(t *testing.T) {
 		t.Errorf("expected 2 profiles, got %d", len(profiles))
 	}
 }
+
+// --- Custom CLAUDE.md path tests ---
+
+func TestGetSharedClaudeMDPath_Default(t *testing.T) {
+	// Without config, should return default path
+	path, err := GetSharedClaudeMDPath()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasSuffix(path, "conductor/CLAUDE.md") {
+		t.Errorf("default path should end with conductor/CLAUDE.md, got %q", path)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("path should be absolute, got %q", path)
+	}
+}
+
+func TestGetConductorClaudeMDPath_Default(t *testing.T) {
+	// For a conductor without custom path, should return default
+	path, err := GetConductorClaudeMDPath("test-conductor")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(path, "test-conductor") {
+		t.Errorf("path should contain conductor name, got %q", path)
+	}
+	if !strings.HasSuffix(path, "CLAUDE.md") {
+		t.Errorf("path should end with CLAUDE.md, got %q", path)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("path should be absolute, got %q", path)
+	}
+}
+
+func TestGetConductorClaudeMDPath_Custom(t *testing.T) {
+	// Create a temp directory with a conductor meta.json containing custom path
+	tmpDir := t.TempDir()
+	homeDir, _ := os.UserHomeDir()
+	customPath := filepath.Join(tmpDir, "custom-claude.md")
+
+	// Create meta.json with custom path
+	metaDir := filepath.Join(homeDir, ".agent-deck", "conductor", "test-custom")
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("failed to create meta dir: %v", err)
+	}
+	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", "test-custom"))
+
+	meta := &ConductorMeta{
+		Name:         "test-custom",
+		Profile:      "default",
+		ClaudeMDPath: customPath,
+	}
+	data, _ := json.MarshalIndent(meta, "", "  ")
+	metaPath := filepath.Join(metaDir, "meta.json")
+	if err := os.WriteFile(metaPath, data, 0o644); err != nil {
+		t.Fatalf("failed to write meta: %v", err)
+	}
+
+	// Now test path resolution
+	path, err := GetConductorClaudeMDPath("test-custom")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if path != customPath {
+		t.Errorf("expected custom path %q, got %q", customPath, path)
+	}
+}
+
+func TestPathValidation_TildeExpansion(t *testing.T) {
+	tmpDir := t.TempDir()
+	homeDir, _ := os.UserHomeDir()
+
+	// Create conductor with ~ path
+	name := "test-tilde"
+	metaDir := filepath.Join(homeDir, ".agent-deck", "conductor", name)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("failed to create meta dir: %v", err)
+	}
+	defer os.RemoveAll(metaDir)
+
+	// Use ~/temp/... path
+	relativePath := "~/" + filepath.Base(tmpDir) + "/conductor.md"
+	meta := &ConductorMeta{
+		Name:         name,
+		Profile:      "default",
+		ClaudeMDPath: relativePath,
+	}
+	data, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(filepath.Join(metaDir, "meta.json"), data, 0o644); err != nil {
+		t.Fatalf("failed to write meta: %v", err)
+	}
+
+	// Test expansion
+	path, err := GetConductorClaudeMDPath(name)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be expanded to absolute path
+	if strings.HasPrefix(path, "~") {
+		t.Errorf("path should be expanded, got %q", path)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("expanded path should be absolute, got %q", path)
+	}
+	if !strings.Contains(path, homeDir) {
+		t.Errorf("expanded path should contain home dir, got %q", path)
+	}
+}
+
+func TestPathValidation_AbsolutePath(t *testing.T) {
+	homeDir, _ := os.UserHomeDir()
+	name := "test-relative"
+	metaDir := filepath.Join(homeDir, ".agent-deck", "conductor", name)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("failed to create meta dir: %v", err)
+	}
+	defer os.RemoveAll(metaDir)
+
+	// Use relative path (should fail validation)
+	meta := &ConductorMeta{
+		Name:         name,
+		Profile:      "default",
+		ClaudeMDPath: "relative/path.md",
+	}
+	data, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(filepath.Join(metaDir, "meta.json"), data, 0o644); err != nil {
+		t.Fatalf("failed to write meta: %v", err)
+	}
+
+	// Should return error for relative path
+	_, err := GetConductorClaudeMDPath(name)
+	if err == nil {
+		t.Error("expected error for relative path, got nil")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Errorf("error should mention 'absolute', got %v", err)
+	}
+}
+
+func TestSetupConductor_CustomClaudeMD(t *testing.T) {
+	tmpDir := t.TempDir()
+	customPath := filepath.Join(tmpDir, "custom-conductor.md")
+
+	name := "test-setup"
+	profile := "default"
+
+	// Clean up after test
+	homeDir, _ := os.UserHomeDir()
+	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
+
+	// Setup with custom path
+	err := SetupConductor(name, profile, true, "test description", customPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify file was created at custom location
+	if _, err := os.Stat(customPath); os.IsNotExist(err) {
+		t.Errorf("CLAUDE.md not created at custom path %q", customPath)
+	}
+
+	// Verify meta.json contains custom path
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		t.Fatalf("failed to load meta: %v", err)
+	}
+	if meta.ClaudeMDPath != customPath {
+		t.Errorf("meta should contain custom path %q, got %q", customPath, meta.ClaudeMDPath)
+	}
+
+	// Verify path resolution returns custom path
+	resolvedPath, err := GetConductorClaudeMDPath(name)
+	if err != nil {
+		t.Fatalf("failed to resolve path: %v", err)
+	}
+	if resolvedPath != customPath {
+		t.Errorf("resolved path should be %q, got %q", customPath, resolvedPath)
+	}
+}
