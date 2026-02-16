@@ -1380,23 +1380,27 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 			continue
 		}
 
-		if status == "active" {
+		switch status {
+		case "active":
 			sawActive = true
 			waitingCount = 0
 			continue
-		}
-
-		if status == "waiting" {
+		case "inactive":
+			return fmt.Errorf("session is dead (inactive)")
+		case "waiting", "idle":
+			// Both mean "at prompt, ready" — idle is just already-acknowledged.
 			waitingCount++
-		} else {
+		default:
+			// "starting" or unknown — keep waiting but don't count toward ready.
 			waitingCount = 0
 		}
 
 		// Agent is ready when:
-		// 1. We've seen "active" (loading) and now see "waiting" (ready)
-		// 2. We've seen "waiting" 10+ times (already ready)
+		// 1. We've seen "active" (loading) and now see "waiting"/"idle" (ready)
+		// 2. We've seen "waiting"/"idle" 10+ times (already ready)
+		atPrompt := status == "waiting" || status == "idle"
 		alreadyReady := waitingCount >= 10 && attempt >= 15 // At least 3s elapsed
-		if (sawActive && status == "waiting") || alreadyReady {
+		if (sawActive && atPrompt) || alreadyReady {
 			time.Sleep(300 * time.Millisecond) // Small delay for UI to render
 			return nil
 		}
