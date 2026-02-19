@@ -345,6 +345,12 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
 
+	// Conductor sessions can opt into blocking compaction via clear_on_compact.
+	clearOnCompact := i.GroupPath == "conductor" && i.conductorClearOnCompact()
+	if clearOnCompact {
+		configDirPrefix = "AGENTDECK_CLEAR_ON_COMPACT=1 " + configDirPrefix
+	}
+
 	// Get options - either from instance or create defaults from config
 	opts := i.GetClaudeOptions()
 	if opts == nil {
@@ -375,11 +381,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 				}
 				// Session was never interacted with - use --session-id with same UUID
 				// This handles the case where session was started but no message was sent
-				bashExportPrefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-				if IsClaudeConfigDirExplicit() {
-					configDir := GetClaudeConfigDir()
-					bashExportPrefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
-				}
+				bashExportPrefix := i.buildBashExportPrefix(clearOnCompact)
 				return fmt.Sprintf(
 					`tmux set-environment CLAUDE_SESSION_ID "%s"; %sclaude --session-id "%s"%s`,
 					opts.ResumeSessionID, bashExportPrefix, opts.ResumeSessionID, extraFlags)
@@ -399,11 +401,7 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 		// Reason: Commands with $(...) get wrapped in `bash -c` for fish compatibility (#47),
 		// and shell aliases are not available in non-interactive bash shells.
 		//
-		bashExportPrefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
-		if IsClaudeConfigDirExplicit() {
-			configDir := GetClaudeConfigDir()
-			bashExportPrefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", configDir)
-		}
+		bashExportPrefix := i.buildBashExportPrefix(clearOnCompact)
 
 		var baseCmd string
 		// Pre-generate UUID and use --session-id flag (instant, no API call)
@@ -436,6 +434,20 @@ func (i *Instance) buildClaudeCommandWithMessage(baseCommand, message string) st
 
 	// For custom commands (e.g., fork commands), return as-is
 	return baseCommand
+}
+
+// buildBashExportPrefix builds the export prefix used in bash -c commands.
+// It always exports AGENTDECK_INSTANCE_ID, and conditionally adds
+// AGENTDECK_CLEAR_ON_COMPACT and CLAUDE_CONFIG_DIR.
+func (i *Instance) buildBashExportPrefix(clearOnCompact bool) string {
+	prefix := fmt.Sprintf("export AGENTDECK_INSTANCE_ID=%s; ", i.ID)
+	if clearOnCompact {
+		prefix += "export AGENTDECK_CLEAR_ON_COMPACT=1; "
+	}
+	if IsClaudeConfigDirExplicit() {
+		prefix += fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s; ", GetClaudeConfigDir())
+	}
+	return prefix
 }
 
 // buildClaudeExtraFlags builds extra command-line flags string from ClaudeOptions
@@ -3086,6 +3098,11 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	// can identify which agent-deck session they belong to.
 	instanceIDPrefix := fmt.Sprintf("AGENTDECK_INSTANCE_ID=%s ", i.ID)
 	configDirPrefix = instanceIDPrefix + configDirPrefix
+
+	// Compute once: conductor sessions can opt into blocking compaction via clear_on_compact.
+	if i.GroupPath == "conductor" && i.conductorClearOnCompact() {
+		configDirPrefix = "AGENTDECK_CLEAR_ON_COMPACT=1 " + configDirPrefix
+	}
 
 	// Get per-session permission settings (falls back to config if not persisted)
 	opts := i.GetClaudeOptions()

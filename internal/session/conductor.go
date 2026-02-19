@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -72,6 +73,42 @@ type ConductorMeta struct {
 	HeartbeatInterval int    `json:"heartbeat_interval"` // 0 = use global default
 	Description       string `json:"description,omitempty"`
 	CreatedAt         string `json:"created_at"`
+
+	// ClearOnCompact blocks Claude's auto-compaction and sends /clear instead.
+	// When context fills up (~95%), Claude normally summarizes prior conversation (lossy).
+	// With this enabled, agent-deck blocks compaction and clears context entirely,
+	// relying on CLAUDE.md and conductor state for continuity.
+	// Default: true (nil = use default true via GetClearOnCompact)
+	ClearOnCompact *bool `json:"clear_on_compact,omitempty"`
+}
+
+// GetClearOnCompact returns whether to block compaction and send /clear instead, defaulting to true
+func (m *ConductorMeta) GetClearOnCompact() bool {
+	if m.ClearOnCompact == nil {
+		return true
+	}
+	return *m.ClearOnCompact
+}
+
+// conductorClearOnCompact checks if this conductor instance has clear_on_compact enabled.
+// Extracts the conductor name from the session title ("conductor-{NAME}"),
+// loads meta.json, and returns the setting (defaults to true).
+// Returns false if the title doesn't match conductor format, since the caller
+// should not enable clear-on-compact for non-conductor sessions.
+func (i *Instance) conductorClearOnCompact() bool {
+	name := strings.TrimPrefix(i.Title, "conductor-")
+	if name == "" || name == i.Title {
+		return false // not a conductor-prefixed title: don't enable
+	}
+	meta, err := LoadConductorMeta(name)
+	if err != nil {
+		sessionLog.Warn("conductor_meta_load_failed",
+			slog.String("conductor", name),
+			slog.String("error", err.Error()),
+			slog.String("fallback", "clear_on_compact=true"))
+		return true // can't load meta: enable by default
+	}
+	return meta.GetClearOnCompact()
 }
 
 // conductorNameRegex validates conductor names: starts with alphanumeric, then alphanumeric/._-

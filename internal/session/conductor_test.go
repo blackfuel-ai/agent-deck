@@ -1355,3 +1355,66 @@ func TestMigrateConductorPolicySplit_PreservesSymlinkedClaudeMD(t *testing.T) {
 		t.Fatalf("symlink destination changed to %q, want %q", linkDest, customPath)
 	}
 }
+
+func TestConductorMeta_GetClearOnCompact(t *testing.T) {
+	// nil (default) -> true
+	meta := &ConductorMeta{Name: "test"}
+	if !meta.GetClearOnCompact() {
+		t.Error("nil ClearOnCompact should default to true")
+	}
+
+	// explicitly true
+	trueVal := true
+	meta.ClearOnCompact = &trueVal
+	if !meta.GetClearOnCompact() {
+		t.Error("explicit true should return true")
+	}
+
+	// explicitly false
+	falseVal := false
+	meta.ClearOnCompact = &falseVal
+	if meta.GetClearOnCompact() {
+		t.Error("explicit false should return false")
+	}
+}
+
+func TestConductorClearOnCompact(t *testing.T) {
+	// Override HOME so LoadConductorMeta reads from our temp dir
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// Create conductor meta with clear_on_compact = true (default)
+	condDir := filepath.Join(tmpHome, ".agent-deck", "conductor", "main")
+	if err := os.MkdirAll(condDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	meta := ConductorMeta{Name: "main", Profile: "default"}
+	data, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(condDir, "meta.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Conductor instance with matching title
+	inst := &Instance{Title: "conductor-main", GroupPath: "conductor"}
+	if !inst.conductorClearOnCompact() {
+		t.Error("should return true for conductor with default ClearOnCompact")
+	}
+
+	// Now set clear_on_compact = false
+	falseVal := false
+	meta.ClearOnCompact = &falseVal
+	data, _ = json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(condDir, "meta.json"), data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if inst.conductorClearOnCompact() {
+		t.Error("should return false when clear_on_compact is explicitly disabled")
+	}
+
+	// Non-conductor title should return false (not a conductor-prefixed session)
+	nonConductor := &Instance{Title: "my-session", GroupPath: "conductor"}
+	if nonConductor.conductorClearOnCompact() {
+		t.Error("non-conductor-prefixed title should return false")
+	}
+}
