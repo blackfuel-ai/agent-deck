@@ -19,7 +19,7 @@ func TestMapEventToStatus(t *testing.T) {
 		{"PermissionRequest", "waiting"},
 		{"Notification", ""},
 		{"SessionEnd", "dead"},
-		{"PreCompact", "compact_blocked"},
+		{"PreCompact", ""},
 		{"UnknownEvent", ""},
 	}
 

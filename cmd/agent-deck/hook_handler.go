@@ -51,7 +51,7 @@ func mapEventToStatus(event string) string {
 	case "SessionEnd":
 		return "dead"
 	case "PreCompact":
-		return "compact_blocked"
+		return "" // Observability only; context-% monitoring handles /clear proactively
 	default:
 		return ""
 	}
@@ -99,14 +99,6 @@ func handleHookHandler() {
 	}
 
 	writeHookStatus(instanceID, status, payload.SessionID, payload.HookEventName)
-
-	// PreCompact: block compaction only for conductor sessions that opt in.
-	// AGENTDECK_CLEAR_ON_COMPACT is set by the conductor session's command prefix.
-	if payload.HookEventName == "PreCompact" && os.Getenv("AGENTDECK_CLEAR_ON_COMPACT") == "1" {
-		// Exit code 2 tells Claude Code to block this action.
-		fmt.Fprintln(os.Stderr, "Compaction blocked by agent-deck. Context will be cleared instead.")
-		os.Exit(2)
-	}
 }
 
 // writeHookStatus writes a hook status file atomically for one instance.

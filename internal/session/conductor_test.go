@@ -1396,7 +1396,7 @@ func TestConductorClearOnCompact(t *testing.T) {
 
 	// Conductor instance with matching title
 	inst := &Instance{Title: "conductor-main", GroupPath: "conductor"}
-	if !inst.conductorClearOnCompact() {
+	if !inst.ConductorClearOnCompact() {
 		t.Error("should return true for conductor with default ClearOnCompact")
 	}
 
@@ -1408,13 +1408,13 @@ func TestConductorClearOnCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if inst.conductorClearOnCompact() {
+	if inst.ConductorClearOnCompact() {
 		t.Error("should return false when clear_on_compact is explicitly disabled")
 	}
 
 	// Non-conductor title should return false (not a conductor-prefixed session)
 	nonConductor := &Instance{Title: "my-session", GroupPath: "conductor"}
-	if nonConductor.conductorClearOnCompact() {
+	if nonConductor.ConductorClearOnCompact() {
 		t.Error("non-conductor-prefixed title should return false")
 	}
 }

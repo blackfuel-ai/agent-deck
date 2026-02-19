@@ -66,6 +66,14 @@ const (
 	// analyticsCacheTTL - how long analytics data remains valid before refresh
 	// Analytics don't change frequently, so 5s is a good balance between freshness and performance
 	analyticsCacheTTL = 5 * time.Second
+
+	// clearOnCompactThreshold - context usage % at which conductor sessions get /clear
+	// Triggers before Claude's auto-compact (~95-98%), giving a clean slate via /clear
+	clearOnCompactThreshold = 90.0
+
+	// clearOnCompactCooldown - minimum time between /clear sends for the same session
+	// Prevents repeated /clear if context fills up again quickly
+	clearOnCompactCooldown = 60 * time.Second
 )
 
 // UI spacing constants (2-char grid system)
@@ -219,6 +227,9 @@ type Home struct {
 	// Hook-based status detection (Claude Code lifecycle hooks)
 	hookWatcher        *session.StatusFileWatcher
 	pendingHooksPrompt bool // True if user should be prompted to install hooks
+
+	// Context-% based /clear for conductor sessions with clear_on_compact
+	clearOnCompactSent map[string]time.Time // instanceID -> last /clear send time (debounce)
 
 	// File watcher for external changes (auto-reload)
 	storageWatcher *StorageWatcher
@@ -537,6 +548,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		analyticsCache:       make(map[string]*session.SessionAnalytics),
 		geminiAnalyticsCache: make(map[string]*session.GeminiSessionAnalytics),
 		analyticsCacheTime:   make(map[string]time.Time),
+		clearOnCompactSent:   make(map[string]time.Time),
 		launchingSessions:    make(map[string]time.Time),
 		resumingSessions:     make(map[string]time.Time),
 		mcpLoadingSessions:   make(map[string]time.Time),
@@ -1744,15 +1756,37 @@ func (h *Home) backgroundStatusUpdate() {
 				if hs := h.hookWatcher.GetHookStatus(inst.ID); hs != nil {
 					inst.UpdateHookStatus(hs)
 				}
-				// Detect compact_blocked: consume it atomically and send /clear
-				if h.hookWatcher.ConsumeCompactBlocked(inst.ID) {
-					if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
-						go func() {
-							time.Sleep(500 * time.Millisecond)
-							tmuxSess.SendKeysAndEnter("/clear")
-						}()
-					}
-				}
+			}
+		}
+	}
+
+	// Proactive context-% monitoring: send /clear before auto-compact triggers
+	// For conductor sessions with clear_on_compact enabled, check cached analytics
+	for _, inst := range instances {
+		if inst.Tool != "claude" || inst.GroupPath != "conductor" {
+			continue
+		}
+		if !inst.ConductorClearOnCompact() {
+			continue
+		}
+		// Debounce: skip if /clear was recently sent for this session
+		if lastSent, ok := h.clearOnCompactSent[inst.ID]; ok {
+			if time.Since(lastSent) < clearOnCompactCooldown {
+				continue
+			}
+		}
+		// Check cached analytics for context usage
+		cached := h.getAnalyticsForSession(inst)
+		if cached == nil {
+			continue
+		}
+		if cached.ContextPercent(0) >= clearOnCompactThreshold {
+			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
+				h.clearOnCompactSent[inst.ID] = time.Now()
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					tmuxSess.SendKeysAndEnter("/clear")
+				}()
 			}
 		}
 	}
