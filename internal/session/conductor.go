@@ -317,7 +317,7 @@ func matchesTemplateContent(actual, expected string) bool {
 // If customClaudeMD is provided, creates a symlink instead of writing the template.
 // If customPolicyMD is provided, creates a per-conductor POLICY.md symlink (overrides the shared POLICY.md).
 // It does NOT register the session (that's done by the CLI handler which has access to storage).
-func SetupConductor(name, profile string, heartbeatEnabled bool, description string, customClaudeMD string, customPolicyMD string) error {
+func SetupConductor(name, profile string, heartbeatEnabled bool, clearOnCompact bool, description string, customClaudeMD string, customPolicyMD string) error {
 	if err := ValidateConductorName(name); err != nil {
 		return err
 	}
@@ -368,6 +368,9 @@ func SetupConductor(name, profile string, heartbeatEnabled bool, description str
 		HeartbeatEnabled: heartbeatEnabled,
 		Description:      description,
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+	}
+	if !clearOnCompact {
+		meta.ClearOnCompact = &clearOnCompact
 	}
 	if err := SaveConductorMeta(meta); err != nil {
 		return fmt.Errorf("failed to write meta.json: %w", err)
@@ -549,7 +552,7 @@ const conductorHeartbeatPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 // SetupConductorProfile creates the conductor directory and CLAUDE.md for a profile.
 // Deprecated: Use SetupConductor instead. Kept for backward compatibility.
 func SetupConductorProfile(profile string) error {
-	return SetupConductor(profile, profile, true, "", "", "")
+	return SetupConductor(profile, profile, true, true, "", "", "")
 }
 
 // createSymlinkWithExpansion creates a symlink from target to source, with ~ expansion and validation.

@@ -714,7 +714,7 @@ func TestSetupConductor_DefaultTemplate(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup without custom path (uses default template)
-	err := SetupConductor(name, profile, true, "test description", "", "")
+	err := SetupConductor(name, profile, true, true, "test description", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -770,7 +770,7 @@ func TestSetupConductor_CustomSymlink(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup with custom path (creates symlink)
-	err := SetupConductor(name, profile, true, "test description", customPath, "")
+	err := SetupConductor(name, profile, true, true, "test description", customPath, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -800,7 +800,7 @@ func TestSetupConductor_EmptyProfileNormalizesToDefault(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "default-profile-conductor"
-	if err := SetupConductor(name, "", true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "", true, true, "", "", ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -827,11 +827,11 @@ func TestSetupConductor_ProfileConflict(t *testing.T) {
 	t.Setenv("HOME", tmpHome)
 
 	name := "profile-conflict"
-	if err := SetupConductor(name, "work", true, "", "", ""); err != nil {
+	if err := SetupConductor(name, "work", true, true, "", "", ""); err != nil {
 		t.Fatalf("first setup failed: %v", err)
 	}
 
-	err := SetupConductor(name, "personal", true, "", "", "")
+	err := SetupConductor(name, "personal", true, true, "", "", "")
 	if err == nil {
 		t.Fatal("expected conflict error when reusing conductor name across profiles")
 	}
@@ -1196,7 +1196,7 @@ func TestSetupConductor_PolicyOverride(t *testing.T) {
 	defer os.RemoveAll(filepath.Join(homeDir, ".agent-deck", "conductor", name))
 
 	// Setup with custom policy path (creates per-conductor symlink)
-	err := SetupConductor(name, profile, true, "test description", "", customPolicyPath)
+	err := SetupConductor(name, profile, true, true, "test description", "", customPolicyPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
