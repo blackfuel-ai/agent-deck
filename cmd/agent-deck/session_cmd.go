@@ -1518,17 +1518,20 @@ func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
 			continue
 		}
 
-		if status == "waiting" {
+		if status == "waiting" || status == "idle" {
 			waitingCount++
 		} else {
 			waitingCount = 0
 		}
 
 		// Agent is ready when:
-		// 1. We've seen "active" (loading) and now see "waiting" (ready)
-		// 2. We've seen "waiting" 10+ times (already ready)
+		// 1. We've seen "active" (loading) and now see "waiting"/"idle" (ready)
+		// 2. We've seen "waiting"/"idle" 10+ times (already ready)
+		// Both "waiting" (unacknowledged) and "idle" (acknowledged) mean the
+		// agent prompt is available and can accept input.
+		inputReady := status == "waiting" || status == "idle"
 		alreadyReady := waitingCount >= 10 && attempt >= 15 // At least 3s elapsed
-		if (sawActive && status == "waiting") || alreadyReady {
+		if (sawActive && inputReady) || alreadyReady {
 			time.Sleep(300 * time.Millisecond) // Small delay for UI to render
 			return nil
 		}
