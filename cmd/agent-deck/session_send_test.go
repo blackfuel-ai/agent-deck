@@ -346,3 +346,24 @@ func TestWaitOutputRetrieval_StaleSessionID(t *testing.T) {
 		}
 	})
 }
+
+func TestIsAgentBusy(t *testing.T) {
+	tests := []struct {
+		status string
+		busy   bool
+	}{
+		{"active", true},
+		{"running", true},
+		{"waiting", false},
+		{"idle", false},
+		{"inactive", false},
+		{"paused", false},
+		{"unknown-future-status", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isAgentBusy(tt.status); got != tt.busy {
+			t.Errorf("isAgentBusy(%q) = %v, want %v", tt.status, got, tt.busy)
+		}
+	}
+}

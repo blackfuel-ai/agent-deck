@@ -1496,45 +1496,50 @@ func sendWithRetryTarget(target sendRetryTarget, message string, skipVerify bool
 	return nil
 }
 
-// waitForAgentReady waits for Claude/Gemini/other agents to be ready for input
-// Uses status detection: waits for "active" → "waiting" transition
-func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
-	sawActive := false
-	waitingCount := 0
-	maxAttempts := 400 // 80 seconds max (400 * 200ms)
+// isAgentBusy returns true for statuses where the agent is actively processing
+// and cannot accept new input. Unknown statuses are treated as not-busy to
+// avoid breaking on newly introduced states.
+func isAgentBusy(status string) bool {
+	return status == "active" || status == "running"
+}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(200 * time.Millisecond)
+// waitForAgentReady waits for the agent to be ready for input by polling until
+// it is no longer busy (active/running). This uses a deny-list approach: only
+// known busy states block, so new statuses (idle, paused, etc.) are accepted
+// by default without code changes.
+func waitForAgentReady(tmuxSess *tmux.Session, tool string) error {
+	const (
+		pollInterval = 200 * time.Millisecond
+		timeout      = 80 * time.Second
+		settleCount  = 3 // consecutive not-busy polls before declaring ready
+		settleDelay  = 300 * time.Millisecond
+	)
+
+	deadline := time.Now().Add(timeout)
+	consecutive := 0
+
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
 
 		status, err := tmuxSess.GetStatus()
 		if err != nil {
-			waitingCount = 0
+			consecutive = 0
 			continue
 		}
 
-		if status == "active" {
-			sawActive = true
-			waitingCount = 0
+		if isAgentBusy(status) {
+			consecutive = 0
 			continue
 		}
 
-		if status == "waiting" {
-			waitingCount++
-		} else {
-			waitingCount = 0
-		}
-
-		// Agent is ready when:
-		// 1. We've seen "active" (loading) and now see "waiting" (ready)
-		// 2. We've seen "waiting" 10+ times (already ready)
-		alreadyReady := waitingCount >= 10 && attempt >= 15 // At least 3s elapsed
-		if (sawActive && status == "waiting") || alreadyReady {
-			time.Sleep(300 * time.Millisecond) // Small delay for UI to render
+		consecutive++
+		if consecutive >= settleCount {
+			time.Sleep(settleDelay) // Small delay for UI to render
 			return nil
 		}
 	}
 
-	return fmt.Errorf("agent not ready after 80 seconds")
+	return fmt.Errorf("agent not ready after %s", timeout)
 }
 
 // statusChecker abstracts tmux status polling so waitForCompletion is testable.
