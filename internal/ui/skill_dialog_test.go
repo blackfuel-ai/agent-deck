@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,7 +15,10 @@ import (
 func setupSkillDialogEnv(t *testing.T) func() {
 	t.Helper()
 
-	homeDir := t.TempDir()
+	homeDir, err := os.MkdirTemp("", "agentdeck-skill-dialog-home-*")
+	if err != nil {
+		t.Fatalf("failed to create temp home: %v", err)
+	}
 	claudeDir := filepath.Join(homeDir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatalf("failed to create claude dir: %v", err)
@@ -34,6 +38,12 @@ func setupSkillDialogEnv(t *testing.T) func() {
 		_ = os.Setenv("HOME", oldHome)
 		_ = os.Setenv("CLAUDE_CONFIG_DIR", oldClaude)
 		session.ClearUserConfigCache()
+		for i := 0; i < 3; i++ {
+			if err := os.RemoveAll(homeDir); err == nil || os.IsNotExist(err) {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 }
 
@@ -167,6 +177,35 @@ func TestSkillDialog_Show_AvailableOnlyPoolSource(t *testing.T) {
 	}
 	if dialog.available[0].Candidate.Source != "pool" {
 		t.Fatalf("expected pool source in available, got %q", dialog.available[0].Candidate.Source)
+	}
+}
+
+func TestSkillDialog_Show_IgnoresLegacyFileSkillsInAvailable(t *testing.T) {
+	cleanup := setupSkillDialogEnv(t)
+	defer cleanup()
+
+	poolPath := t.TempDir()
+	writeDialogSkillDir(t, poolPath, "pool-one", "pool-one", "Pool managed skill")
+	if err := os.WriteFile(filepath.Join(poolPath, "legacy.skill"), []byte("legacy"), 0o644); err != nil {
+		t.Fatalf("failed to write legacy skill file: %v", err)
+	}
+
+	if err := session.SaveSkillSources(map[string]session.SkillSourceDef{
+		"pool": {Path: poolPath, Enabled: boolPtrDialog(true)},
+	}); err != nil {
+		t.Fatalf("SaveSkillSources failed: %v", err)
+	}
+
+	dialog := NewSkillDialog()
+	if err := dialog.Show(t.TempDir(), "sess-1", "claude"); err != nil {
+		t.Fatalf("Show failed: %v", err)
+	}
+
+	if len(dialog.available) != 1 {
+		t.Fatalf("expected only directory skills in available, got %d", len(dialog.available))
+	}
+	if dialog.available[0].Candidate.EntryName != "pool-one" {
+		t.Fatalf("expected pool-one directory entry, got %q", dialog.available[0].Candidate.EntryName)
 	}
 }
 

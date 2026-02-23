@@ -63,9 +63,6 @@ SLACK_MAX_LENGTH = 40000
 # How long to wait for conductor to respond (seconds)
 RESPONSE_TIMEOUT = 300
 
-# Poll interval when waiting for conductor response (seconds)
-POLL_INTERVAL = 2
-
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -1245,19 +1242,21 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
                     continue
 
                 # Send heartbeat to conductor
-                if not send_to_conductor(
-                    session_title, heartbeat_msg, profile=profile
-                ):
+                ok, response = send_to_conductor(
+                    session_title,
+                    heartbeat_msg,
+                    profile=profile,
+                    wait_for_reply=True,
+                    response_timeout=RESPONSE_TIMEOUT,
+                )
+                if not ok:
                     log.error(
                         "Heartbeat [%s]: failed to send to conductor",
                         name,
                     )
                     continue
 
-                # Wait for conductor's response
-                response = await wait_for_response(
-                    session_title, profile=profile
-                )
+                # Response is returned directly by `session send --wait`.
                 log.info(
                     "Heartbeat [%s] response: %s",
                     name, response[:200],
