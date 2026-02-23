@@ -69,7 +69,7 @@ const (
 
 	// clearOnCompactThreshold - context usage % at which conductor sessions get /clear
 	// Triggers before Claude's auto-compact (~95-98%), giving a clean slate via /clear
-	clearOnCompactThreshold = 90.0
+	clearOnCompactThreshold = 80.0
 
 	// clearOnCompactCooldown - minimum time between /clear sends for the same session
 	// Prevents repeated /clear if context fills up again quickly
@@ -1783,9 +1783,18 @@ func (h *Home) backgroundStatusUpdate() {
 		if cached.ContextPercent(0) >= clearOnCompactThreshold {
 			if tmuxSess := inst.GetTmuxSession(); tmuxSess != nil {
 				h.clearOnCompactSent[inst.ID] = time.Now()
+				conductorName := strings.TrimPrefix(inst.Title, "conductor-")
 				go func() {
 					time.Sleep(500 * time.Millisecond)
 					tmuxSess.SendKeysAndEnter("/clear")
+					// After /clear wipes context, immediately send heartbeat to restore orientation
+					time.Sleep(3 * time.Second)
+					profile := session.DefaultProfile
+					if meta, err := session.LoadConductorMeta(conductorName); err == nil {
+						profile = meta.Profile
+					}
+					msg := fmt.Sprintf("Heartbeat: Check all sessions in the %s profile. List any waiting sessions, auto-respond where safe, and report what needs my attention.", profile)
+					tmuxSess.SendKeysAndEnter(msg)
 				}()
 			}
 		}
