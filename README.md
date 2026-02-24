@@ -216,7 +216,27 @@ ops: check the frontend session      → routes to conductor-ops (reply in threa
 
 Both Telegram and Slack can run simultaneously — the bridge daemon handles both concurrently and relays responses on-demand, plus periodic heartbeat alerts to configured platforms.
 
-**Heartbeat-driven monitoring**: Conductors are nudged every configured interval (default 15 minutes). If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
+**Built-in status-driven notifications**: conductor setup also installs a transition notifier daemon (`agent-deck notify-daemon`) that watches status transitions and sends parent/conductor nudges when child sessions move `running -> waiting|error|idle`.
+
+**Heartbeat-driven monitoring**: heartbeats still run on the configured interval (default 15 minutes) as a secondary safety net. If a conductor response includes `NEED:`, the bridge forwards that alert to Telegram and/or Slack.
+
+**Legacy external watcher scripts**: optional only. `~/.agent-deck/events/` is not required for notification routing.
+
+**Launching sessions from inside a conductor**:
+
+```bash
+# Inherit current conductor as parent (default when AGENT_DECK_SESSION_ID is set)
+agent-deck -p work launch . -t "child-task" -c claude -m "Do task"
+
+# Keep parent notifications and still force a custom group
+agent-deck -p work launch . -t "review-phantom" -g ard -c claude -m "Review dataset"
+
+# Tool command with extra args is supported directly
+agent-deck -p work launch . -c "codex --dangerously-bypass-approvals-and-sandbox"
+```
+
+When `--cmd` includes extra args, agent-deck auto-wraps the tool command so args are preserved reliably.
+Use `--no-parent` only when you explicitly want to disable parent routing/notifications.
 
 ### Multi-Tool Support
 
