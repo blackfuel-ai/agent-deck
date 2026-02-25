@@ -1353,8 +1353,12 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
     while True:
         await asyncio.sleep(interval_seconds)
 
-        all_conductors = discover_conductors()
-        conductors = select_heartbeat_conductors(all_conductors)
+        try:
+            all_conductors = discover_conductors()
+            conductors = select_heartbeat_conductors(all_conductors)
+        except Exception as e:
+            log.error("Heartbeat: failed to discover conductors: %s", e)
+            continue
         for conductor in conductors:
             try:
                 name = conductor.get("name", "")
