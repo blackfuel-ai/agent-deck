@@ -1416,10 +1416,10 @@ async def heartbeat_loop(config: dict, telegram_bot=None, slack_app=None, slack_
                     "Check if any need auto-response or user attention."
                 )
 
-                # Inject HEARTBEAT_RULES.md if present (per-profile, then global)
+                # Inject HEARTBEAT_RULES.md if present (per-conductor, then global)
                 rules_text = None
                 for rules_path in [
-                    CONDUCTOR_DIR / profile / "HEARTBEAT_RULES.md",
+                    CONDUCTOR_DIR / name / "HEARTBEAT_RULES.md",
                     CONDUCTOR_DIR / "HEARTBEAT_RULES.md",
                 ]:
                     if rules_path.exists():
